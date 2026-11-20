@@ -23,7 +23,7 @@ export function StatusPanel() {
 
   return (
     <section
-      className="panel order-2 mx-auto w-full max-w-2xl space-y-3 overflow-hidden border-t-2 border-t-pink/70 px-4 py-3 shadow-[0_8px_24px_-16px_rgba(255,43,120,0.65)] lg:order-none lg:mx-0 lg:max-w-none lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none"
+      className="panel order-2 mx-auto w-full max-w-2xl shrink-0 space-y-2 border-t-2 border-t-pink/70 px-4 py-3 shadow-[0_8px_24px_-16px_rgba(255,43,120,0.65)] lg:order-none lg:mx-0 lg:max-w-none lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none"
       aria-live="polite"
     >
       <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 lg:justify-between">

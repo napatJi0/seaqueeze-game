@@ -102,6 +102,9 @@ export class BoardRenderer {
   private staticLayer: HTMLCanvasElement | null = null;
   private staticKey = "";
   private trails = new Map<PlayerId, { x: number; y: number }[]>();
+  /** Per-ball display angle (follows physics while moving; eases upright once settled). */
+  private displayAngles = new Map<PlayerId, number>();
+  private lastRenderMs: number | null = null;
   /** Slots to highlight as a duplicate landing (set by the UI on invalid attempts). */
   duplicateSlots: number[] = [];
   /** Balls are hidden while waiting for START ROUND; they appear at their random spawn. */
@@ -119,11 +122,15 @@ export class BoardRenderer {
 
   clearTrails(): void {
     this.trails.clear();
+    this.displayAngles.clear();
+    this.lastRenderMs = null;
   }
 
   render(canvas: HTMLCanvasElement, engine: PlinkoPhysicsEngine, timeMs: number): void {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+    const dtSec = this.lastRenderMs === null ? 0 : Math.min(0.1, Math.max(0, (timeMs - this.lastRenderMs) / 1000));
+    this.lastRenderMs = timeMs;
     const scale = canvas.width / this.layout.width;
     this.ensureStaticLayer(canvas.width, canvas.height, scale);
 
@@ -149,7 +156,31 @@ export class BoardRenderer {
     this.drawLids(ctx, engine);
     if (!this.showBalls) return;
     for (const b of balls) this.drawTrail(ctx, b.playerId);
-    for (const b of balls) this.drawBall(ctx, b.playerId, b.x, b.y, b.landedSlot !== null);
+    for (const b of balls) {
+      const angle = this.updateDisplayAngle(b.playerId, b.angle, b.landedSlot !== null, engine.phase === "ready", dtSec);
+      this.drawBall(ctx, b.playerId, b.x, b.y, angle, b.landedSlot !== null);
+    }
+  }
+
+  private updateDisplayAngle(id: PlayerId, physicsAngle: number, landed: boolean, ready: boolean, dtSec: number): number {
+    if (this.reducedMotion || ready) {
+      this.displayAngles.set(id, 0);
+      return 0;
+    }
+    if (!landed) {
+      this.displayAngles.set(id, physicsAngle);
+      return physicsAngle;
+    }
+    // Smoothly ease the cookie upright along the shortest arc once settled in a slot.
+    const current = this.displayAngles.get(id) ?? physicsAngle;
+    const wrapped = Math.atan2(Math.sin(current), Math.cos(current));
+    if (Math.abs(wrapped) < 0.005) {
+      this.displayAngles.set(id, 0);
+      return 0;
+    }
+    const next = wrapped * Math.exp(-dtSec * 7.5);
+    this.displayAngles.set(id, next);
+    return next;
   }
 
   // ---------------------------------------------------------------------------
@@ -355,13 +386,13 @@ export class BoardRenderer {
     ctx.globalAlpha = 1;
   }
 
-  /** A gold dalgona cookie with the player's symbol engraved (kept upright for readability). */
-  private drawBall(ctx: CanvasRenderingContext2D, id: PlayerId, x: number, y: number, landed: boolean): void {
+  /** A gold dalgona cookie with the player's symbol engraved (spins with physics, eases upright when settled). */
+  private drawBall(ctx: CanvasRenderingContext2D, id: PlayerId, x: number, y: number, angle: number, landed: boolean): void {
     const player = PLAYERS.find((p) => p.id === id);
     if (!player) return;
     const r = this.layout.ballRadius;
 
-    // Body with a soft drop shadow
+    // Body with a soft drop shadow (overhead lighting stays fixed in world space)
     ctx.save();
     ctx.shadowColor = landed ? "rgba(255, 214, 120, 0.75)" : "rgba(0, 0, 0, 0.6)";
     ctx.shadowBlur = landed ? 26 : 12;
@@ -376,35 +407,37 @@ export class BoardRenderer {
     ctx.fill();
     ctx.restore();
 
-    // Baked texture
+    // Rotating cookie surface: baked speckles + engraved symbol spin together
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(angle);
+
     ctx.fillStyle = COOKIE.speck;
     for (const sp of speckles(player.number)) {
       ctx.beginPath();
-      ctx.arc(x + sp.dx * r, y + sp.dy * r, sp.s * r, 0, Math.PI * 2);
+      ctx.arc(sp.dx * r, sp.dy * r, sp.s * r, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Highlight crescent (upper right)
+    const size = r * 0.5;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.lineWidth = Math.max(2, r * 0.075);
+    ctx.strokeStyle = COOKIE.engraveLight;
+    traceSymbol(ctx, player.symbol, r * 0.03, r * 0.04, size);
+    ctx.stroke();
+    ctx.strokeStyle = COOKIE.engrave;
+    traceSymbol(ctx, player.symbol, 0, 0, size);
+    ctx.stroke();
+    ctx.restore();
+
+    // Highlight crescent (upper right, fixed to overhead light)
     ctx.save();
     ctx.strokeStyle = "rgba(255, 250, 225, 0.6)";
     ctx.lineWidth = r * 0.08;
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.arc(x, y, r * 0.8, -Math.PI * 0.42, -Math.PI * 0.05);
-    ctx.stroke();
-    ctx.restore();
-
-    // Engraved symbol: light lower edge + dark groove
-    const size = r * 0.5;
-    ctx.save();
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-    ctx.lineWidth = Math.max(2, r * 0.075);
-    ctx.strokeStyle = COOKIE.engraveLight;
-    traceSymbol(ctx, player.symbol, x + r * 0.03, y + r * 0.04, size);
-    ctx.stroke();
-    ctx.strokeStyle = COOKIE.engrave;
-    traceSymbol(ctx, player.symbol, x, y, size);
     ctx.stroke();
     ctx.restore();
 

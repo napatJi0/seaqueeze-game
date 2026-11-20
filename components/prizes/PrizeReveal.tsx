@@ -13,11 +13,11 @@ import { PrizeBadge } from "./PrizeBadge";
 export function PrizeReveal({ result }: { result: RoundResult }) {
   const t = useT();
   return (
-    <section aria-live="polite" className="space-y-2">
+    <section aria-live="polite" className="space-y-1.5">
       <h3 className="text-xs uppercase tracking-[0.2em] text-muted">
         {t.reveal.summary} · {t.round.label} {pad2(result.roundNumber)}
       </h3>
-      <ul className="space-y-1.5">
+      <ul className="space-y-1">
         {result.placements.map((p, i) => {
           const player = getPlayer(p.playerId);
           return (
@@ -26,7 +26,7 @@ export function PrizeReveal({ result }: { result: RoundResult }) {
               initial={{ opacity: 0, x: 16 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: 0.35 + i * 0.08 }}
-              className="flex items-center gap-2 bg-white/[0.04] px-2 py-1.5"
+              className="flex items-center gap-2 bg-white/[0.04] px-2 py-1"
             >
               <PlayerSymbol kind={player.symbol} color={player.color} size={20} title={playerName(t, player)} />
               <span className="min-w-0 flex-1 truncate text-sm font-semibold" style={{ color: player.color }}>

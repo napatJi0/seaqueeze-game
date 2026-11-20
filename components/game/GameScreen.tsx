@@ -69,9 +69,9 @@ export function GameScreen() {
             <PlinkoBoard />
           </section>
 
-          <aside className="contents lg:panel lg:order-none lg:flex lg:min-h-0 lg:flex-col lg:gap-4 lg:overflow-y-auto lg:p-4">
+          <aside className="contents lg:panel lg:order-none lg:flex lg:min-h-0 lg:flex-col lg:gap-3 lg:overflow-y-auto lg:p-3">
             <StatusPanel />
-            <div className="panel order-4 p-4 lg:mt-auto lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none">
+            <div className="panel order-4 shrink-0 p-4 lg:mt-auto lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none">
               <GameControls onOpenConfig={() => setConfigOpen(true)} onOpenReset={() => setResetOpen(true)} />
             </div>
           </aside>

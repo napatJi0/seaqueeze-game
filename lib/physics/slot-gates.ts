@@ -14,7 +14,7 @@
  */
 import type { BoardLayout, Point } from "./board-layout";
 
-export const RAMP_STEP = 18;
+export const RAMP_STEP = 26;
 
 export interface LidSegment {
   slot: number;
@@ -79,4 +79,19 @@ export function lidEdgeHeights(segments: readonly LidSegment[], slot: number): {
   const first = own[0] as LidSegment;
   const last = own[own.length - 1] as LidSegment;
   return { left: first.a.y, right: last.b.y };
+}
+
+/** Height (y) of the lid top surface for a closed slot at horizontal coordinate x. */
+export function lidSurfaceYAt(segments: readonly LidSegment[], slot: number, x: number): number | null {
+  for (const s of segments) {
+    if (s.slot !== slot) continue;
+    const minX = Math.min(s.a.x, s.b.x);
+    const maxX = Math.max(s.a.x, s.b.x);
+    if (x >= minX - 1 && x <= maxX + 1) {
+      const span = s.b.x - s.a.x;
+      const t = Math.abs(span) < 1e-6 ? 0.5 : Math.min(1, Math.max(0, (x - s.a.x) / span));
+      return s.a.y + (s.b.y - s.a.y) * t;
+    }
+  }
+  return null;
 }

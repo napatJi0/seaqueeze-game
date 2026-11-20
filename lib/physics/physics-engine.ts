@@ -18,7 +18,7 @@ import type { PlayerId } from "@/types/player";
 import { secureRandom, type RandomSource } from "@/lib/random";
 import { slotIndexAt, type BoardLayout } from "./board-layout";
 import { BALL_LABEL, SLOT_SENSOR_LABEL, SlotSensorTracker } from "./collision";
-import { computeLidSegments, type LidSegment } from "./slot-gates";
+import { computeLidSegments, lidSurfaceYAt, type LidSegment } from "./slot-gates";
 import { defaultSpawn, isValidSpawn, type SpawnPoint } from "./spawn";
 
 /** Tunable physical parameters. */
@@ -26,13 +26,15 @@ export const PHYSICS = {
   /** Fixed simulation step (ms). 120 Hz gives stable peg collisions. */
   stepMs: 1000 / 120,
   gravityY: 1.2,
-  ball: { restitution: 0.38, friction: 0.04, frictionStatic: 0.2, frictionAir: 0.01, density: 0.0024 },
-  peg: { restitution: 0.55, friction: 0, frictionStatic: 0 },
-  wall: { restitution: 0.3, friction: 0.05 },
+  ball: { restitution: 0.38, friction: 0.12, frictionStatic: 0.05, frictionAir: 0.01, density: 0.0024 },
+  peg: { restitution: 0.55, friction: 0.08, frictionStatic: 0 },
+  wall: { restitution: 0.3, friction: 0.08 },
   floor: { restitution: 0.02, friction: 0.9, frictionStatic: 1 },
-  /** Slot gate lids: smooth so balls roll off toward an open slot. */
-  lid: { restitution: 0.15, friction: 0, frictionStatic: 0 },
+  /** Slot gate lids: zero static friction so balls never stall, light rolling friction for spin. */
+  lid: { restitution: 0.12, friction: 0.12, frictionStatic: 0 },
   lidThickness: 10,
+  /** Downhill roller speed multiplier along closed slot lids. */
+  lidRollSpeed: 2,
   /** Release variation: tiny, symmetric, per ball (the only randomness source). */
   releaseJitterX: 5,
   releaseJitterVX: 0.45,
@@ -211,6 +213,7 @@ export class PlinkoPhysicsEngine {
   /** Run one fixed physics step. Exposed for headless tests. */
   stepOnce(): void {
     if (this.phaseValue !== "running") return;
+    this.applyLidRollDrive();
     try {
       Matter.Engine.update(this.engine, PHYSICS.stepMs);
     } catch {
@@ -219,6 +222,55 @@ export class PlinkoPhysicsEngine {
     }
     this.elapsedMs += PHYSICS.stepMs;
     this.evaluateBalls();
+  }
+
+  /**
+   * Powered roller assist along closed slot lids: when a ball touches a sloped lid,
+   * accelerate it smoothly downhill toward the open slot with matching rolling spin.
+   * Depends only on lid geometry (never on prizes or ball identity).
+   */
+  private applyLidRollDrive(): void {
+    if (this.lidSegments.length === 0) return;
+    const r = this.layout.ballRadius;
+    const contactDist = r + 5;
+    const boost = Math.max(0, PHYSICS.lidRollSpeed - 1);
+    const targetSpeed = 2.4 * PHYSICS.lidRollSpeed;
+
+    for (const b of this.balls) {
+      if (b.landedSlot !== null) continue;
+      const { x, y } = b.body.position;
+      for (const seg of this.lidSegments) {
+        const dx = seg.b.x - seg.a.x;
+        const dy = seg.b.y - seg.a.y;
+        if (Math.abs(dy) < 0.5) continue; // flat lid (all slots closed)
+        const lenSq = dx * dx + dy * dy;
+        const t = ((x - seg.a.x) * dx + (y - seg.a.y) * dy) / lenSq;
+        if (t < -0.05 || t > 1.05) continue;
+        const cx = seg.a.x + Math.min(1, Math.max(0, t)) * dx;
+        const cy = seg.a.y + Math.min(1, Math.max(0, t)) * dy;
+        if (y > cy + 4) continue; // ball is below the lid
+        if (Math.hypot(x - cx, y - cy) > contactDist) continue;
+
+        const len = Math.sqrt(lenSq);
+        const dir = dy > 0 ? 1 : -1;
+        const tx = (dx / len) * dir;
+        const ty = (dy / len) * dir;
+        const v = Matter.Body.getVelocity(b.body);
+        const vAlong = v.x * tx + v.y * ty;
+        let deltaV = 0;
+        if (boost > 0 && vAlong < targetSpeed) {
+          deltaV = Math.min(0.09 * boost, targetSpeed - vAlong);
+          Matter.Body.setVelocity(b.body, { x: v.x + tx * deltaV, y: v.y + ty * deltaV });
+        }
+        const vNew = vAlong + deltaV;
+        if (Math.abs(vNew) > 0.05) {
+          const targetOmega = Math.sign(tx) * (vNew / r);
+          const curOmega = Matter.Body.getAngularVelocity(b.body);
+          Matter.Body.setAngularVelocity(b.body, curOmega + (targetOmega - curOmega) * 0.25);
+        }
+        break;
+      }
+    }
   }
 
   getBallStates(): BallState[] {
@@ -332,10 +384,11 @@ export class PlinkoPhysicsEngine {
       const sensorSlot = this.tracker.slotOf(b.body);
 
       if (sensorSlot !== null && slotIndexAt(this.layout, x) === sensorSlot) {
-        // Filled-slot gate: once a ball is fully below the divider tops, its slot closes.
-        if (!this.closedSlots.has(sensorSlot) && y - this.layout.ballRadius > this.layout.dividerTop + 2) {
+        // Filled-slot gate: as soon as the first ball clears the slot mouth, the shutter closes.
+        if (!this.closedSlots.has(sensorSlot) && y - this.layout.ballRadius > this.layout.dividerTop - 4) {
           this.closedSlots.set(sensorSlot, b.playerId);
           this.rebuildLids();
+          this.deflectTrailingBallsAboveLid(sensorSlot, b);
         }
         b.outsideStillMs = 0;
         b.anchor = { x, y };
@@ -396,6 +449,33 @@ export class PlinkoPhysicsEngine {
       this.lidBodies.push(body);
     }
     if (this.lidBodies.length > 0) Matter.Composite.add(this.engine.world, this.lidBodies);
+  }
+
+  /**
+   * When a slot shutter snaps shut behind `claimer`, any trailing ball still in the upper
+   * mouth of that slot is physically popped up onto the closed lid so it rolls to an open slot
+   * instead of being trapped inside the same slot.
+   */
+  private deflectTrailingBallsAboveLid(slot: number, claimer: BallRuntime): void {
+    const r = this.layout.ballRadius;
+    const claimerY = claimer.body.position.y;
+    for (const other of this.balls) {
+      if (other === claimer || other.landedSlot !== null) continue;
+      const { x, y } = other.body.position;
+      if (slotIndexAt(this.layout, x) !== slot) continue;
+      const lidY = lidSurfaceYAt(this.lidSegments, slot, x);
+      if (lidY === null) continue;
+      // Only lift balls that are still trailing above the claimer (or overlapping the closing shutter).
+      const trailingAbove = y <= claimerY + 2 && y < this.layout.floorY - r - 12;
+      const overlappingShutter = y - r < lidY + PHYSICS.lidThickness + 4 && y + r > lidY - 2;
+      if (!trailingAbove && !overlappingShutter) continue;
+      const targetY = lidY - r - 2;
+      if (y > targetY) {
+        const v = Matter.Body.getVelocity(other.body);
+        Matter.Body.setPosition(other.body, { x, y: targetY });
+        Matter.Body.setVelocity(other.body, { x: v.x, y: Math.min(v.y, -2.6) });
+      }
+    }
   }
 
   private finish(failure: EngineOutcome["failure"]): void {
